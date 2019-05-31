@@ -13,7 +13,7 @@
 
 import { BundlePart } from "./BundlePart";
 import { TemplateNodejsappProfile } from "./TemplateNodejsappProfile";
-import { IHandlerParameters } from "@zowe/imperative";
+import { IHandlerParameters } from "@brightside/imperative";
 
 /**
  * Interface to represent the manifest data for a NODEJSAPP BundlePart.

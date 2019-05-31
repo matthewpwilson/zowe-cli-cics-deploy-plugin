@@ -12,7 +12,7 @@
 "use strict";
 
 import { BundlePart, IBundlePartDataType } from "./BundlePart";
-import { IHandlerParameters } from "@zowe/imperative";
+import { IHandlerParameters } from "@brightside/imperative";
 
 /**
  * Interface to represent the manifest data for a CICS Bundle.
