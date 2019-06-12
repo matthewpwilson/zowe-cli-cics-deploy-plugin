@@ -17,6 +17,9 @@ import { getResource, IResourceParms } from "@zowe/cics";
 import { BundleDeployer } from "../BundleDeploy/BundleDeployer";
 import { Bundle } from "../BundleContent/Bundle";
 import { SubtaskWithStatus } from "./SubtaskWithStatus";
+import { ZosmfConfig } from "./ZosmfConfig";
+import { SshConfig } from "./SshConfig";
+import { CmciConfig } from "./CmciConfig";
 
 
 /**
@@ -43,6 +46,7 @@ export class BundlePusher {
    * @memberof BundlePusher
    */
   constructor(params: IHandlerParameters, localDirectory: string) {
+
     this.params = params;
     this.localDirectory = localDirectory;
     this.validateParameters();
@@ -72,10 +76,21 @@ export class BundlePusher {
     }
 
     // Get the profiles
-    const zosMFProfile = this.getProfile("zosmf", true);
-    const sshProfile = this.getProfile("ssh", true);
-    const cicsProfile = this.getProfile("cics", false);
+    const zosMFProfile = this.getProfile("zosmf");
+    const sshProfile = this.getProfile("ssh");
+    let cicsProfile = this.getProfile("cics");
+    ZosmfConfig.mergeProfile(zosMFProfile, this.params);
+    SshConfig.mergeProfile(sshProfile, this.params);
+    CmciConfig.mergeProfile(cicsProfile, this.params);
+
+    // The cics profile is optional, detect whether it has been set (or constructed)
+    if (Object.keys(cicsProfile).length === 0) {
+       cicsProfile = undefined;
+    }
+
+    // Now detect any mismatches between the values from the profiles
     this.validateProfiles(zosMFProfile, sshProfile, cicsProfile);
+
 
     // Create a zOSMF session
     const zosMFSession = await this.createZosMFSession(zosMFProfile);
@@ -129,13 +144,10 @@ export class BundlePusher {
     // Run 'npm install' for each package.json file that exists in the bundle
     await this.runAllNpmInstalls(sshSession, packageJsonFiles);
 
-    // Run DFHDPLOY to install the bundle
+    // Run DFHDPLOY to install the bundle (note that this will end the progress bar)
     await this.deployBundle(zosMFSession, bd, cicsSession, bundle);
 
-    // Complete the progress bar
-    this.progressBar.percentComplete = TaskProgress.ONE_HUNDRED_PERCENT;
-    this.endProgressBar();
-    return "PUSH operation completed.";
+    return "PUSH operation completed";
   }
 
   private validateParameters() {
@@ -186,11 +198,11 @@ export class BundlePusher {
     }
   }
 
-  private getProfile(type: string, required: boolean): IProfile {
-    const profile =  this.params.profiles.get(type);
+  private getProfile(type: string): IProfile {
+    let profile =  this.params.profiles.get(type);
 
-    if (required && profile === undefined) {
-      throw new Error("No " + type + " profile found");
+    if (profile === undefined) {
+      profile = {};
     }
 
     return profile;
@@ -202,38 +214,54 @@ export class BundlePusher {
   }
 
   private issueMessage(msg: string) {
-    this.endProgressBar();
     this.params.response.console.log(Buffer.from(msg));
     if (this.params.arguments.silent === undefined) {
       const logger = Logger.getAppLogger();
       logger.warn(msg);
     }
-    this.startProgressBar();
   }
 
   private validateProfiles(zosmfProfile: IProfile, sshProfile: IProfile, cicsProfile: IProfile) {
     // Do the required profiles share the same host name?
+    let sameHostAndUser = true;
     if (zosmfProfile.host !== sshProfile.host) {
-      this.issueWarning("ssh profile --host value '" + sshProfile.host + "' does not match zosmf value '" + zosmfProfile.host + "'.");
+      sameHostAndUser = false;
+      this.issueWarning("--ssh-host value '" + sshProfile.host + "' does not match --zosmf-host value '" + zosmfProfile.host + "'.");
     }
+
     // Do the required profiles share the same user name?
     if (zosmfProfile.user.toUpperCase() !== sshProfile.user.toUpperCase()) {
-      this.issueWarning("ssh profile --user value '" + sshProfile.user + "' does not match zosmf value '" + zosmfProfile.user + "'.");
+      sameHostAndUser = false;
+      this.issueWarning("--ssh-user value '" + sshProfile.user + "' does not match --zosmf-user value '" + zosmfProfile.user + "'.");
+    }
+
+    // If the zoSMF user and host are the same then validate that the passwords are the same too.
+    // It's possible, especially over a password change, that one profile may have been updated
+    // and not the other. Attemps to use the wrong password could result in the account being revoked.
+    if (sameHostAndUser) {
+      if (sshProfile.password !== undefined) {
+        if (zosmfProfile.password !== sshProfile.password) {
+          throw new Error("Different passwords are specified for the same user ID in the zosmf and ssh configurations.");
+        }
+      }
     }
 
     // Is the optional CICS profile compatible?
     if (cicsProfile !== undefined) {
+      sameHostAndUser = true;
       if (zosmfProfile.host !== cicsProfile.host) {
-        this.issueWarning("cics profile --host value '" + cicsProfile.host + "' does not match zosmf value '" + zosmfProfile.host + "'.");
+        sameHostAndUser = false;
+        this.issueWarning("--cics-host value '" + cicsProfile.host + "' does not match --zosmf-host value '" + zosmfProfile.host + "'.");
       }
       if (zosmfProfile.user.toUpperCase() !== cicsProfile.user.toUpperCase()) {
-        this.issueWarning("cics profile --user value '" + cicsProfile.user + "' does not match zosmf value '" + zosmfProfile.user + "'.");
+        sameHostAndUser = false;
+        this.issueWarning("--cics-user value '" + cicsProfile.user + "' does not match --zosmf-user value '" + zosmfProfile.user + "'.");
       }
 
-      // Do the cics-plexes match?
-      if (cicsProfile.cicsPlex !== undefined && this.params.arguments.cicsplex !== cicsProfile.cicsPlex) {
-        this.issueWarning("cics profile --cics-plex value '" + cicsProfile.cicsPlex +
-          "' does not match --cicsplex value '" + this.params.arguments.cicsplex + "'.");
+      if (sameHostAndUser) {
+        if (zosmfProfile.password !== cicsProfile.password) {
+          throw new Error("Different passwords are specified for the same user ID in the zosmf and cics configurations.");
+        }
       }
     }
   }
@@ -341,7 +369,8 @@ export class BundlePusher {
     this.startProgressBar();
   }
 
-  private async deployBundle(zosMFSession: AbstractSession, bd: BundleDeployer, cicsSession: AbstractSession, bundle: Bundle) {
+  private async deployBundle(zosMFSession: AbstractSession, bd: BundleDeployer,
+                             cicsSession: AbstractSession, bundle: Bundle) {
     // End the current progress bar so that DEPLOY can create its own
     this.updateStatus("Deploying bundle '" + this.params.arguments.name + "' to CICS");
     const subtask = new SubtaskWithStatus(this.progressBar, TaskProgress.THIRTY_PERCENT);
@@ -358,7 +387,8 @@ export class BundlePusher {
     }
     dfhdployOutput = bd.getJobOutput();
 
-    // Resume the current progress bar
+    // End the main progress bar
+    this.progressBar.percentComplete = TaskProgress.ONE_HUNDRED_PERCENT;
     this.endProgressBar();
     if (deployError === undefined) {
       this.updateStatus("Deploy complete");
@@ -366,14 +396,24 @@ export class BundlePusher {
     else {
       this.updateStatus("Deploy ended with errors");
     }
-    this.startProgressBar();
 
     // Collect general information about the regions in the CICSplex scope
-    const diagnosticsWorking = await this.outputGeneralDiagnostics(cicsSession);
-    if (diagnosticsWorking && bundle.containsDefinitionsOfType("http://www.ibm.com/xmlns/prod/cics/bundle/NODEJSAPP")) {
+    let deployMessages = await this.generateGeneralDiagnostics(cicsSession);
+
+    if (deployError !== undefined && dfhdployOutput.indexOf("DFHRL2067") === -1) {
+        // If we have an error, but DFHDPLOY did not report that some bundleparts are disabled,
+        // we can assume bundle didn't install at all. In this case skip generation of
+        // Node.js diagnostics.
+        deployMessages += "DFHDPLOY output implied the bundle failed to install. Check the output above for further information. ";
+        deployMessages += "Consider examining the JESMSGLG, MSGUSR, SYSPRINT and SYSOUT spool files of the CICS region job, ";
+        deployMessages += "or consult your CICS system programmer.\n";
+    } else if (deployMessages !== "" && bundle.containsDefinitionsOfType("http://www.ibm.com/xmlns/prod/cics/bundle/NODEJSAPP")) {
       // Generate additional diagnostic output for Node.js
-      await this.outputNodejsSpecificDiagnostics(cicsSession);
+      deployMessages += await this.generateNodejsSpecificDiagnostics(cicsSession);
     }
+
+    // Report any console messages now
+    this.issueMessage(deployMessages);
 
     // Now rethrow the original error, if there was one.
     if (deployError !== undefined) {
@@ -615,13 +655,13 @@ export class BundlePusher {
     }
   }
 
-  private async outputGeneralDiagnostics(cicsSession: AbstractSession): Promise<boolean> {
-    let scopeFound = false;
+  private async generateGeneralDiagnostics(cicsSession: AbstractSession): Promise<string> {
+    let msgBuffer = "";
     try {
       if (cicsSession !== undefined) {
         // Attempt to gather additional Node.js specific information from CICS
-        this.updateStatus("Gathering Scope information");
-        scopeFound = await this.gatherGeneralDiagnosticsFromCics(cicsSession);
+        this.updateStatus("Gathering scope information");
+        msgBuffer = await this.gatherGeneralDiagnosticsFromCics(cicsSession);
       }
     }
     catch (diagnosticsError) {
@@ -633,15 +673,21 @@ export class BundlePusher {
         logger.debug(diagnosticsError.message);
       }
     }
-    return scopeFound;
+
+    // Something went wrong, suggest a command that can be run to figure out more.
+    if (msgBuffer === "") {
+      this.issueMessage("An attempt to query the remote CICSplex using the cics plug-in has failed.\n");
+    }
+
+    return msgBuffer;
   }
 
-  private async outputNodejsSpecificDiagnostics(cicsSession: AbstractSession) {
-    let diagnosticsIssued = false;
+  private async generateNodejsSpecificDiagnostics(cicsSession: AbstractSession): Promise<string> {
+    let msgBuffer = "";
     try {
       // Attempt to gather additional Node.js specific information from CICS
       this.updateStatus("Gathering Node.js diagnostics");
-      diagnosticsIssued = await this.gatherNodejsDiagnosticsFromCics(cicsSession);
+      msgBuffer = await this.gatherNodejsDiagnosticsFromCics(cicsSession);
     }
     catch (diagnosticsError) {
       // Something went wrong generating diagnostic info. Don't trouble the user
@@ -654,18 +700,19 @@ export class BundlePusher {
     }
 
     // We must have a cics profile in order to have got this far, so suggest a command that can be run to figure out more.
-    if (diagnosticsIssued === false) {
-      const msg = "For further information on the state of your NODEJSAPP resources, consider running the following command:\n\n" +
+    if (msgBuffer === "") {
+      msgBuffer += "For further information on the state of your NODEJSAPP resources, consider running the following command:\n\n" +
             "zowe cics get resource CICSNodejsapp --region-name " + this.params.arguments.scope +
-            " --criteria \"BUNDLE=" + this.params.arguments.name + "\" --cics-plex " + this.params.arguments.cicsplex + "\n";
-      this.issueMessage(msg);
+            " --criteria \"BUNDLE=" + this.params.arguments.name + "\" --cics-plex " + this.params.arguments.cicsplex + "\n\n";
     }
+
+    return msgBuffer;
   }
 
-  private async gatherGeneralDiagnosticsFromCics(cicsSession: AbstractSession): Promise<boolean> {
+  private async gatherGeneralDiagnosticsFromCics(cicsSession: AbstractSession): Promise<string> {
     // Issue a CMCI get to the target CICSplex
     try {
-      this.updateStatus("Querying Regions in Scope over CMCI");
+      this.updateStatus("Querying regions in scope over CMCI");
       const regionData: IResourceParms = { name: "CICSRegion",
                                            regionName: this.params.arguments.scope,
                                            cicsPlex: this.params.arguments.cicsplex };
@@ -677,27 +724,25 @@ export class BundlePusher {
         throw new Error("CICSRegion CMCI output record not found.");
       }
       const outputRegionRecords = cmciRegionResponse.response.records.cicsregion;
-      const msg = "CICS Regions in Scope '" + this.params.arguments.scope + "' of CICSplex '" + this.params.arguments.cicsplex + "':\n";
-      this.issueMessage(msg);
+      let msgBuffer = "Regions in scope '" + this.params.arguments.scope + "' of CICSplex '" + this.params.arguments.cicsplex + "':\n";
 
       // We may have an array of records if there was more than one Region in the scope
       if (Array.isArray(outputRegionRecords)) {
         for (const record of outputRegionRecords) {
-          this.reportRegionData(record);
+          msgBuffer = this.reportRegionData(record, msgBuffer);
         }
       }
       else {
-        this.reportRegionData(outputRegionRecords);
+        msgBuffer = this.reportRegionData(outputRegionRecords, msgBuffer);
       }
+      return msgBuffer;
     }
     catch (error) {
       throw new Error("Failure collecting diagnostics for Bundle " + this.params.arguments.name + ": " + error.message);
     }
-
-    return true;
   }
 
-  private async gatherNodejsDiagnosticsFromCics(cicsSession: AbstractSession): Promise<boolean> {
+  private async gatherNodejsDiagnosticsFromCics(cicsSession: AbstractSession): Promise<string> {
     try {
       // Process each NODEJSAPP in the Scope
       this.updateStatus("Querying NODEJSAPP resources over CMCI");
@@ -714,37 +759,35 @@ export class BundlePusher {
       }
       const outputNodejsRecords = cmciNodejsResponse.response.records.cicsnodejsapp;
 
-      const msg = "\nNODEJSAPP resources for Bundle '" + this.params.arguments.name + "' in Scope '" + this.params.arguments.scope + "':\n";
-      this.issueMessage(msg);
+      let msgBuffer = "\nNODEJSAPP resources for bundle '" + this.params.arguments.name + "' in scope '" + this.params.arguments.scope + "':\n";
 
       // We may have an array of records if there was more than one NODEJSAPP in the bundle
       if (Array.isArray(outputNodejsRecords)) {
         for (const record of outputNodejsRecords) {
-          this.reportNODEJSAPPData(record);
+          msgBuffer = this.reportNODEJSAPPData(record, msgBuffer);
         }
       }
       else {
-        this.reportNODEJSAPPData(outputNodejsRecords);
+        msgBuffer = this.reportNODEJSAPPData(outputNodejsRecords, msgBuffer);
       }
+      return msgBuffer;
     }
     catch (error) {
       throw new Error("Failure collecting diagnostics for Bundle " + this.params.arguments.name + ": " + error.message);
     }
-
-    return true;
   }
 
-  private reportRegionData(outputRecord: any) {
+  private reportRegionData(outputRecord: any, msgBuffer: string): string {
     const MAX_LENGTH = 8;
     const applid = outputRecord.applid.padEnd(MAX_LENGTH, " ");
     const jobid = outputRecord.jobid.padEnd(MAX_LENGTH, " ");
     const jobname = outputRecord.jobname.padEnd(MAX_LENGTH, " ");
+    const sysname = outputRecord.mvssysname.padEnd(MAX_LENGTH, " ");
 
-    const msg = "   Applid: " + applid + "   jobname: " + jobname + "   jobid: " + jobid + "\n";
-    this.issueMessage(msg);
+    return msgBuffer + "   Applid: " + applid + "   jobname: " + jobname + "   jobid: " + jobid + "   sysname: " + sysname + "\n";
   }
 
-  private reportNODEJSAPPData(outputRecord: any) {
+  private reportNODEJSAPPData(outputRecord: any, msgBuffer: string) {
     const name = outputRecord.name;
     const enablestatus = outputRecord.enablestatus;
     const pid = outputRecord.pid;
@@ -752,17 +795,16 @@ export class BundlePusher {
     let stdout = outputRecord.stdout;
     let stderr = outputRecord.stderr;
 
-    if (stdout === "") {
+    if (stdout === undefined || stdout.trim() === "") {
       stdout = "<not available>";
     }
-    if (stderr === "") {
+    if (stderr === undefined || stderr.trim() === "") {
       stderr = "<not available>";
     }
 
-    const msg = "CICS NODEJSAPP resource '" + name + "' is in '" + enablestatus + "' state in region '" +
-                region + "' with process id '" + pid + "'.\n" +
-                "  stdout: " + stdout + "\n" +
-                "  stderr: " + stderr + "\n";
-    this.issueMessage(msg);
+    return msgBuffer + "NODEJSAPP resource '" + name + "' is in '" + enablestatus + "' state in region '" +
+           region + "' with process id '" + pid + "'.\n" +
+           "  stdout: " + stdout + "\n" +
+           "  stderr: " + stderr + "\n";
   }
 }

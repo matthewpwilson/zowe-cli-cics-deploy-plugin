@@ -1,16 +1,24 @@
 ---
-title: Create Zowe CLI profiles
+title: Creating Zowe CLI profiles
 tags: [getting_started, concepts]
 keywords:
 summary: "Zowe profiles let you store configuration details so you don't have to repeat them every time you use a Zowe CLI command."
 sidebar: cdp_sidebar
-permalink: cdp-Create-Zowe-CLI-profiles.html
+permalink: cdp-Creating-Zowe-CLI-profiles.html
 folder: cdp
 ---
 
-### Step 1: Create a z/OSMF profile
+The Zowe CLI lets you define arguments and options for commands in multiple ways, with the following order of precedence:
 
-This profile defines the parameters needed to connect to the z/OSMF server on z/OS. You need to know the following from your z/OS system administrator:
+1. Command-line
+2. Environment variables
+3. Profiles
+
+This provides flexibility when you issue commands and write automation scripts. Further detail is in [Understanding command option order of precedence](https://zowe.github.io/docs-site/latest/user-guide/cli-configuringcli.html#understanding-command-option-order-of-precedence). Therefore by creating and setting options in the following profiles, they will become your defaults and do not need to repeat them on Zowe CLI command unless you wish to override them.
+
+### Create a z/OSMF profile
+
+The z/OSMF profile defines the options needed to connect to the z/OSMF server on z/OS. You need to know the following from your z/OS system administrator:
 
 | Option | Description |
 | --- | --- |
@@ -39,9 +47,9 @@ To test the connection to the z/OSMF server using the profile:
 zowe zosmf check status
 ```
 
-### Step 2: Create an SSH profile
+### Create an SSH profile
 
-This profile defines the parameters needed to connect to the SSH server on z/OS. You need to know the following from your z/OS system administrator:
+The SSH profile defines the options needed to connect to the SSH server on z/OS. You need to know the following from your z/OS system administrator:
 
 | Option | Description |
 | --- | --- |
@@ -70,9 +78,9 @@ To test the connection to the SSH server using the profile:
 zowe zos-uss issue ssh 'uname -a'
 ```
 
-### Step 3: Create a cics-deploy profile
+### Create a cics-deploy profile
 
-This profile identifies the CICS environment for deployment. You need to know the following from your CICS system administrator:
+The cics-deploy profile identifies the CICS environment for deployment. An example of how to create an environment using using z/OS Provisioning Toolkit as described in [Provisioning a CICS region using z/OS PT](cdp-Provisioning-a-CICS-region-using-zospt). You need to know the following from your CICS system administrator:
 
 | Option | Description |
 | --- | --- |
@@ -97,3 +105,34 @@ zowe profiles create cics-deploy-profile --help
 ```
 
 To test the cics-deploy profile, follow the steps in [Deploying your first Node.js app](cdp-Deploying-your-first-nodejs-app).
+
+### Create a CICS profile
+
+The CICS profile identifies the connection to the CICS Web User Interface (WUI) server to query application resources. You need to know the following from your CICS system administrator:
+
+| Option | Description |
+| --- | --- |
+| cics-plex | CPSM CICSplex name. This will typically be set to the same as cicsplex in the cics-deploy profile. |
+| protocol | HTTP or HTTPS to use to connect to the CICS WUI server. |
+| host | Host name of the CICS WUI server. |
+| port | Port number of the CICS WUI server. |
+| user | User ID to identify yourself to the CICS WUI server . |
+| password | Password to identify yourself to the CICS WUI server. |
+
+For example, to create an SSH profile:
+
+```console
+zowe profiles create cics-profile cics --cics-plex PLEX1 --protocol https --host myzos.example.com --port 1490 --user myuserid --password mypassword --overwrite
+```
+
+For help on using the options:
+
+```console
+zowe profiles create cics-profile --help
+```
+
+To test the connection to the CICS WUI server using the profile:
+
+```console
+zowe cics get resource CICSRegion
+```
